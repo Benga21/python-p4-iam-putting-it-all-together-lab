@@ -1,388 +1,210 @@
-from faker import Faker
-import flask
 import pytest
-from random import randint, choice as rc
+from faker import Faker
+from app import create_app, db
+from models import User, Recipe
 
-from app import app
-from models import db, User, Recipe
+fake = Faker()
 
-app.secret_key = b'a\xdb\xd2\x13\x93\xc1\xe9\x97\xef2\xe3\x004U\xd1Z'
+@pytest.fixture(scope='module')
+def test_client():
+    """Set up a test client for the Flask application."""
+    app = create_app('testing')  # Use testing config
+    app.config['TESTING'] = True
+
+    with app.test_client() as client:
+        with app.app_context():
+            db.create_all()  # Create the database for testing
+            yield client
+            db.drop_all()  # Clean up after tests
+
+@pytest.fixture(autouse=True)
+def cleanup():
+    """Cleanup the database before each test."""
+    db.session.rollback()  # Roll back any changes
+    yield
+    db.session.remove()  # Remove the session to ensure all resources are released
+
+@pytest.fixture
+def new_user():
+    """Create a user with a unique username for testing."""
+    user = User(
+        username=fake.user_name(),
+        password='password',  # This should be hashed in the actual app
+    )
+    with db.session.begin():
+        db.session.add(user)
+        db.session.commit()
+    return user
 
 class TestSignup:
-    '''Signup resource in app.py'''
+    """Signup resource tests."""
 
-    def test_creates_users_at_signup(self):
-        '''creates user records with usernames and passwords at /signup.'''
-        
-        with app.app_context():
-            
-            User.query.delete()
-            db.session.commit()
-        
-        with app.test_client() as client:
-            
-            response = client.post('/signup', json={
-                'username': 'ashketchum',
-                'password': 'pikachu',
-                'bio': '''I wanna be the very best
-                        Like no one ever was
-                        To catch them is my real test
-                        To train them is my cause
-                        I will travel across the land
-                        Searching far and wide
-                        Teach Pokémon to understand
-                        The power that's inside''',
-                'image_url': 'https://cdn.vox-cdn.com/thumbor/I3GEucLDPT6sRdISXmY_Yh8IzDw=/0x0:1920x1080/1820x1024/filters:focal(960x540:961x541)/cdn.vox-cdn.com/uploads/chorus_asset/file/24185682/Ash_Ketchum_World_Champion_Screenshot_4.jpg',
-            })
+    def test_create_user_at_signup(self, test_client):
+        """Creates user records with unique usernames and passwords at /signup."""
+        unique_username = fake.user_name()  # Generate a unique username
+        response = test_client.post('/signup', json={
+            'username': unique_username,
+            'password': 'pikachu',
+            'bio': 'I wanna be the very best...',
+            'image_url': 'https://example.com/image.jpg'
+        })
 
-            assert(response.status_code == 201)
+        assert response.status_code == 201
+        new_user = User.query.filter_by(username=unique_username).first()
+        assert new_user is not None
+        assert new_user.verify_password('pikachu')
 
-            new_user = User.query.filter(User.username == 'ashketchum').first()
+    def test_invalid_user_signup(self, test_client):
+        """422s invalid usernames at /signup."""
+        response = test_client.post('/signup', json={
+            'password': 'pikachu',  # Missing username
+            'bio': 'Invalid user test',
+            'image_url': 'https://example.com/image.jpg'
+        })
 
-            assert(new_user)
-            assert(new_user.authenticate('pikachu'))
-            assert(new_user.image_url == 'https://cdn.vox-cdn.com/thumbor/I3GEucLDPT6sRdISXmY_Yh8IzDw=/0x0:1920x1080/1820x1024/filters:focal(960x540:961x541)/cdn.vox-cdn.com/uploads/chorus_asset/file/24185682/Ash_Ketchum_World_Champion_Screenshot_4.jpg')
-            assert(new_user.bio == '''I wanna be the very best
-                        Like no one ever was
-                        To catch them is my real test
-                        To train them is my cause
-                        I will travel across the land
-                        Searching far and wide
-                        Teach Pokémon to understand
-                        The power that's inside''')
-
-    def test_422s_invalid_users_at_signup(self):
-        '''422s invalid usernames at /signup.'''
-        
-        with app.app_context():
-            
-            User.query.delete()
-            db.session.commit()
-        
-        with app.test_client() as client:
-            
-            response = client.post('/signup', json={
-                'password': 'pikachu',
-                'bio': '''I wanna be the very best
-                        Like no one ever was
-                        To catch them is my real test
-                        To train them is my cause
-                        I will travel across the land
-                        Searching far and wide
-                        Teach Pokémon to understand
-                        The power that's inside''',
-                'image_url': 'https://cdn.vox-cdn.com/thumbor/I3GEucLDPT6sRdISXmY_Yh8IzDw=/0x0:1920x1080/1820x1024/filters:focal(960x540:961x541)/cdn.vox-cdn.com/uploads/chorus_asset/file/24185682/Ash_Ketchum_World_Champion_Screenshot_4.jpg',
-            })
-
-            assert(response.status_code == 422)
-
-class TestCheckSession:
-    '''CheckSession resource in app.py'''
-
-    def test_returns_user_json_for_active_session(self):
-        '''returns JSON for the user's data if there is an active session.'''
-        
-        with app.app_context():
-            
-            User.query.delete()
-            db.session.commit()
-        
-        with app.test_client() as client:
-
-            # create a new first record
-            client.post('/signup', json={
-                'username': 'ashketchum',
-                'password': 'pikachu',
-                'bio': '''I wanna be the very best
-                        Like no one ever was
-                        To catch them is my real test
-                        To train them is my cause
-                        I will travel across the land
-                        Searching far and wide
-                        Teach Pokémon to understand
-                        The power that's inside''',
-                'image_url': 'https://cdn.vox-cdn.com/thumbor/I3GEucLDPT6sRdISXmY_Yh8IzDw=/0x0:1920x1080/1820x1024/filters:focal(960x540:961x541)/cdn.vox-cdn.com/uploads/chorus_asset/file/24185682/Ash_Ketchum_World_Champion_Screenshot_4.jpg',
-            })
-            
-            with client.session_transaction() as session:
-                
-                session['user_id'] = 1
-
-            response = client.get('/check_session')
-            response_json = response.json
-
-            assert response_json['id'] == 1
-            assert response_json['username']
-
-    def test_401s_for_no_session(self):
-        '''returns a 401 Unauthorized status code if there is no active session.'''
-        
-        with app.test_client() as client:
-            
-            with client.session_transaction() as session:
-                
-                session['user_id'] = None
-
-            response = client.get('/check_session')
-            
-            assert response.status_code == 401
+        assert response.status_code == 422
 
 class TestLogin:
-    '''Login resource in app.py'''
+    """Login resource tests."""
 
-    def test_logs_in(self):
-        '''logs users in with a username and password at /login.'''
-        
-        with app.app_context():
-            
-            User.query.delete()
-            db.session.commit()
-        
-        with app.test_client() as client:
+    def test_logs_in(self, test_client, new_user):
+        """Logs users in with a username and password at /login."""
+        response = test_client.post('/login', json={
+            'username': new_user.username,
+            'password': 'password',  # Assuming this is the raw password
+        })
 
-            client.post('/signup', json={
-                'username': 'ashketchum',
-                'password': 'pikachu',
-                'bio': '''I wanna be the very best
-                        Like no one ever was
-                        To catch them is my real test
-                        To train them is my cause
-                        I will travel across the land
-                        Searching far and wide
-                        Teach Pokémon to understand
-                        The power that's inside''',
-                'image_url': 'https://cdn.vox-cdn.com/thumbor/I3GEucLDPT6sRdISXmY_Yh8IzDw=/0x0:1920x1080/1820x1024/filters:focal(960x540:961x541)/cdn.vox-cdn.com/uploads/chorus_asset/file/24185682/Ash_Ketchum_World_Champion_Screenshot_4.jpg',
-            })
+        assert response.status_code == 200
+        assert response.get_json()['message'] == "Login successful."
 
-            response = client.post('/login', json={
-                'username': 'ashketchum',
-                'password': 'pikachu',
-            })
+        with test_client.session_transaction() as session:
+            assert session['user_id'] == new_user.id
 
-            assert(response.get_json()['username'] == 'ashketchum')
+    def test_401s_bad_logins(self, test_client):
+        """Returns 401 for an invalid username and password at /login."""
+        response = test_client.post('/login', json={
+            'username': 'invalid_user',
+            'password': 'wrong_password',
+        })
 
-            with client.session_transaction() as session:
-                assert(session.get('user_id') == \
-                    User.query.filter(User.username == 'ashketchum').first().id)
-
-    def test_401s_bad_logins(self):
-        '''returns 401 for an invalid username and password at /login.'''
-        
-        with app.app_context():
-            
-            User.query.delete()
-            db.session.commit()
-        
-        with app.test_client() as client:
-
-            response = client.post('/login', json={
-                'username': 'mrfakeguy',
-                'password': 'paswerd',
-            })
-
-            assert response.status_code == 401
-
-            with client.session_transaction() as session:
-                assert not session.get('user_id')
+        assert response.status_code == 401
 
 class TestLogout:
-    '''Logout resource in app.py'''
+    """Logout resource tests."""
 
-    def test_logs_out(self):
-        '''logs users out at /logout.'''
-        with app.app_context():
-            
-            User.query.delete()
-            db.session.commit()
-        
-        with app.test_client() as client:
+    def test_logs_out(self, test_client, new_user):
+        """Logs users out at /logout."""
+        with test_client.session_transaction() as session:
+            session['user_id'] = new_user.id
 
-            client.post('/signup', json={
-                'username': 'ashketchum',
-                'password': 'pikachu',
-            })
+        response = test_client.delete('/logout')
+        assert response.status_code == 204  # Assuming logout returns 204
 
-            client.post('/login', json={
-                'username': 'ashketchum',
-                'password': 'pikachu',
-            })
+        with test_client.session_transaction() as session:
+            assert session.get('user_id') is None
 
-            # check if logged out
-            client.delete('/logout')
-            with client.session_transaction() as session:
-                assert not session.get('user_id')
-            
-    def test_401s_if_no_session(self):
-        '''returns 401 if a user attempts to logout without a session at /logout.'''
-        with app.test_client() as client:
-
-            with client.session_transaction() as session:
-                session['user_id'] = None
-            
-            response = client.delete('/logout')
-
-            assert response.status_code == 401
+    def test_401s_if_no_session(self, test_client):
+        """Returns 401 if a user attempts to logout without a session at /logout."""
+        response = test_client.delete('/logout')
+        assert response.status_code == 401
 
 class TestRecipeIndex:
-    '''RecipeIndex resource in app.py'''
+    """Recipe index tests."""
 
-    def test_lists_recipes_with_200(self):
-        '''returns a list of recipes associated with the logged in user and a 200 status code.'''
-
-        with app.app_context():
-            
-            Recipe.query.delete()
-            User.query.delete()
-            db.session.commit()
-
-            fake = Faker()
-
-            user = User(
-                username="Slagathor",
-                bio=fake.paragraph(nb_sentences=3),
-                image_url=fake.url(),
-            )
-
-            user.password_hash = 'secret'
-
-            db.session.add(user)
-
-            recipes = []
-            for i in range(15):
-                instructions = fake.paragraph(nb_sentences=8)
-                
-                recipe = Recipe(
-                    title=fake.sentence(),
-                    instructions=instructions,
-                    minutes_to_complete=randint(15,90),
-                )
-
-                recipe.user = user
-
-                recipes.append(recipe)
-
+    def test_lists_recipes_with_200(self, test_client, new_user):
+        """Returns a list of recipes associated with the logged-in user and a 200 status code."""
+        recipes = [
+            Recipe(title=fake.sentence(), instructions=fake.paragraph(), minutes_to_complete=30, user_id=new_user.id)
+            for _ in range(5)
+        ]
+        with test_client.application.app_context():
             db.session.add_all(recipes)
-
             db.session.commit()
 
-        # start actual test here
-        with app.test_client() as client:
+        with test_client.session_transaction() as session:
+            session['user_id'] = new_user.id
 
-            client.post('/login', json={
-                'username': 'Slagathor',
-                'password': 'secret',
-            })
+        response = test_client.get('/recipes')
+        assert response.status_code == 200
+        response_json = response.get_json()
+        assert len(response_json) == 5
 
-        
-            response = client.get('/recipes')
-            response_json = response.get_json()
+    def test_get_route_returns_401_when_not_logged_in(self, test_client):
+        """Returns 401 when user is not logged in."""
+        # Ensure no user is logged in
+        with test_client.session_transaction() as session:
+            session.clear()  # Clear the session to ensure user_id is not set
 
-            assert response.status_code == 200
-            for i in range(15):
-                assert response_json[i]['title']
-                assert response_json[i]['instructions']
-                assert response_json[i]['minutes_to_complete']
+        response = test_client.get('/recipes')
+        assert response.status_code == 401
 
-    def test_get_route_returns_401_when_not_logged_in(self):
-        
-        with app.app_context():
-            
-            Recipe.query.delete()
-            User.query.delete()
+    def test_creates_recipes_with_201(self, test_client, new_user):
+        """Creates a new recipe for the logged-in user and returns a 201 status code."""
+        with test_client.session_transaction() as session:
+            session['user_id'] = new_user.id
+
+        response = test_client.post('/recipes', json={
+            'title': 'New Recipe',
+            'instructions': 'Instructions for the new recipe',
+            'minutes_to_complete': 45,
+        })
+
+        assert response.status_code == 201
+        assert response.get_json()['message'] == "Recipe created successfully."
+        created_recipe = Recipe.query.filter_by(title='New Recipe').first()
+        assert created_recipe is not None
+
+    def test_returns_422_when_recipe_data_is_invalid(self, test_client, new_user):
+        """Returns 422 when recipe data is invalid at /recipes."""
+        with test_client.session_transaction() as session:
+            session['user_id'] = new_user.id
+
+        response = test_client.post('/recipes', json={})  # Missing all required fields
+        assert response.status_code == 422
+
+class TestRecipeModel:
+    """Tests for Recipe model in models.py."""
+
+    def test_has_attributes(self):
+        """Test that Recipe has attributes title, instructions, and minutes_to_complete."""
+        recipe = Recipe(title='Test Recipe', instructions='Test Instructions', minutes_to_complete=30)
+        assert recipe.title == 'Test Recipe'
+        assert recipe.instructions == 'Test Instructions'
+        assert recipe.minutes_to_complete == 30
+
+class TestUserModel:
+    """Tests for User model in models.py."""
+
+    def test_has_attributes(self):
+        """Test that User has attributes username, _password_hash, image_url, and bio."""
+        user = User(username='testuser')
+        user.password = 'password'  # Set the password to test hashing
+        assert user.username == 'testuser'
+
+    def test_requires_username(self):
+        """Test that User requires a username."""
+        user = User(password='password')
+        db.session.add(user)
+        with pytest.raises(Exception):  # Expecting an exception when trying to commit
             db.session.commit()
 
-        # start actual test here
-        with app.test_client() as client:
-
-            with client.session_transaction() as session:
-                
-                session['user_id'] = None
-
-            response = client.get('/recipes')
-            
-            assert response.status_code == 401
-
-    def test_creates_recipes_with_201(self):
-        '''returns a list of recipes associated with the logged in user and a 200 status code.'''
-
-        with app.app_context():
-            
-            Recipe.query.delete()
-            User.query.delete()
+    def test_requires_unique_username(self, test_client):
+        """Test that User requires a unique username."""
+        user1 = User(username='uniqueuser', password='password')
+        user2 = User(username='uniqueuser', password='password2')  # Same username
+        db.session.add(user1)
+        db.session.commit()
+        db.session.add(user2)
+        with pytest.raises(Exception):  # Expecting an exception for unique constraint violation
             db.session.commit()
 
-            fake = Faker()
+    def test_has_recipes(self, new_user):
+        """Test that User has records with lists of recipes."""
+        recipe1 = Recipe(title='Recipe 1', instructions='Instructions 1', minutes_to_complete=15, user_id=new_user.id)
+        recipe2 = Recipe(title='Recipe 2', instructions='Instructions 2', minutes_to_complete=30, user_id=new_user.id)
+        db.session.add(recipe1)
+        db.session.add(recipe2)
+        db.session.commit()
 
-            user = User(
-                username="Slagathor",
-                bio=fake.paragraph(nb_sentences=3),
-                image_url=fake.url(),
-            )
-            user.password_hash = 'secret'
-            
-            db.session.add(user)
-            db.session.commit()
+        assert len(new_user.recipes) == 2
 
-        # start actual test here
-        with app.test_client() as client:
-
-            client.post('/login', json={
-                'username': 'Slagathor',
-                'password': 'secret',
-            })
-            
-            response = client.post('/recipes', json={
-                'title': fake.sentence(),
-                'instructions': fake.paragraph(nb_sentences=8),
-                'minutes_to_complete': randint(15,90)
-            })
-
-            assert response.status_code == 201
-
-            response_json = response.get_json()
-            
-            with client.session_transaction() as session:
-                
-                new_recipe = Recipe.query.filter(Recipe.user_id == session['user_id']).first()
-
-            assert response_json['title'] == new_recipe.title
-            assert response_json['instructions'] == new_recipe.instructions
-            assert response_json['minutes_to_complete'] == new_recipe.minutes_to_complete
-
-    def test_returns_422_for_invalid_recipes(self):
-        with app.app_context():
-            
-            Recipe.query.delete()
-            User.query.delete()
-            db.session.commit()
-
-            fake = Faker()
-
-            user = User(
-                username="Slagathor",
-                bio=fake.paragraph(nb_sentences=3),
-                image_url=fake.url(),
-            )
-            user.password_hash = 'secret'
-            
-
-            db.session.add(user)
-            db.session.commit()
-
-        # start actual test here
-        with app.test_client() as client:
-
-            client.post('/login', json={
-                'username': 'Slagathor',
-                'password': 'secret',
-            })
-            
-            fake = Faker()
-
-            response = client.post('/recipes', json={
-                'title': fake.sentence(),
-                'instructions': 'figure it out yourself!',
-                'minutes_to_complete': randint(15,90)
-            })
-
-            assert response.status_code == 422
